@@ -1,0 +1,13 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Reports and keys must never be committed
+*.key
+.env
+.env.*
+nvidia*.txt
+
+# macOS
+.DS_Store
