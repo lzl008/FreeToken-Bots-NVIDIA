@@ -25,6 +25,7 @@ import html
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -77,6 +78,10 @@ def stripped(model_id):
     return re.sub(r'[^a-z0-9]', '', model_id.lower())
 
 
+class ScrapeError(RuntimeError):
+    """Raised when a page did not come back as the real model-card HTML."""
+
+
 def fetch(page):
     url = SOURCE + '?' + urllib.parse.urlencode(
         {'api-key': 'true', 'pageSize': 96, 'page': page})
@@ -85,7 +90,15 @@ def fetch(page):
     # request that adds those headers with a 202 anti-bot interstitial page
     # (2.4 KB, no model cards) instead of the catalog.
     with urllib.request.urlopen(req, timeout=45) as resp:
-        return resp.read().decode('utf-8', 'ignore')
+        raw = resp.read().decode('utf-8', 'ignore')
+    # That interstitial is also served intermittently for other reasons. Treat
+    # "no cards at all" as a transport failure, never as "the catalog is empty":
+    # writing on a bad page would replace a good 97-model catalog with nothing.
+    if 'nv-card-root' not in raw:
+        raise ScrapeError(
+            'page %d did not return model cards (%d bytes, no nv-card-root) — '
+            'anti-bot interstitial or layout change' % (page, len(raw)))
+    return raw
 
 
 def parse_page(raw):
@@ -141,10 +154,27 @@ def classify(model_id, description):
     return 'unclassified'
 
 
-def scrape():
+def scrape(retries=2):
+    """All model cards, or a ScrapeError. Never returns a partial catalog.
+
+    A page that fails the card check is retried; a page that legitimately has
+    no new models ends pagination. Every page must also *parse* to cards, so a
+    silent layout change fails loudly instead of truncating the catalog.
+    """
     models, page = {}, 1
     while page <= 12:
-        page_models = parse_page(fetch(page))
+        page_models = None
+        for attempt in range(retries + 1):
+            try:
+                page_models = parse_page(fetch(page))
+                break
+            except ScrapeError as exc:
+                sys.stderr.write('WARN %s (attempt %d)\n' % (exc, attempt + 1))
+                if attempt == retries:
+                    raise
+                time.sleep(2 + 2 * attempt)
+        if page == 1 and not page_models:
+            raise ScrapeError('page 1 parsed to zero model cards — refusing to continue')
         new = {k: v for k, v in page_models.items() if k not in models}
         sys.stderr.write('page %d: %d cards, %d new\n' % (page, len(page_models), len(new)))
         if not new:
@@ -157,13 +187,29 @@ def scrape():
     return models
 
 
+def implausible_shrink(new_count, old_count, force=False):
+    """True when a scrape lost so many models it must be a transport problem.
+
+    The interstitial page parses to zero cards, and a partial fetch can look
+    like a mass delisting. Overwriting on that basis destroys a good catalog,
+    so the write is refused unless the caller opts in with --force.
+    """
+    return bool(old_count) and not force and new_count < 0.7 * old_count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true',
                         help='report drift against the committed catalog, write nothing')
+    parser.add_argument('--force', action='store_true',
+                        help='write even if the new catalog shrank implausibly')
     args = parser.parse_args()
 
-    models = scrape()
+    try:
+        models = scrape()
+    except ScrapeError as exc:
+        print('error: scrape failed, catalog left untouched — %s' % exc, file=sys.stderr)
+        return 1
     old = {}
     if CATALOG.exists():
         try:
@@ -187,6 +233,14 @@ def main():
 
     if args.check:
         return 0
+
+    # A catalog that suddenly loses a large fraction of its models is a scrape
+    # problem, not a real delisting. Refuse rather than overwrite good data.
+    if implausible_shrink(len(models), len(old), args.force):
+        print('error: scrape returned %d models vs %d committed (<70%%). '
+              'Refusing to overwrite. Re-run, or pass --force if this is real.'
+              % (len(models), len(old)), file=sys.stderr)
+        return 1
 
     overrides = {}
     if CATALOG.exists():

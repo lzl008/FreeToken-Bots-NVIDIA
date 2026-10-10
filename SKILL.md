@@ -83,5 +83,6 @@ Prefer verified free ≥100B tool-capable models when available, but report a sm
 ## Maintenance notes
 
 - `build.nvidia.com` answers requests carrying `Accept` or `Accept-Language` with a 202 anti-bot shell page (2.4 KB, zero model cards). Send only `User-Agent`. Documented in `refresh_catalog.py`.
+- The same host intermittently serves an incomplete page. Both that and the shell parse as "a large batch of models was delisted", so `refresh_catalog.py` treats "a page yielded no cards" as transport failure (retried, then aborts without writing) and refuses to write a catalog below 70% of the committed size unless `--force`. Never weaken this: one network hiccup would otherwise erase a good catalog.
 - Catalog ids and API ids differ in punctuation (`z-ai/glm-5-3` vs `z-ai/glm-5.3`). Matching literally silently drops flagships; `norm_name` normalises both sides and the mapping is recorded in the report's `catalog_aliases`.
 - Only `data/nvidia_catalog.json`'s `overrides` block is safe to hand-edit; `models` is regenerated on every refresh.

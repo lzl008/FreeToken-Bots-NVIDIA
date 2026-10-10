@@ -204,6 +204,57 @@ class CatalogBuilderTests(unittest.TestCase):
         self.assertEqual(parsed['acme/widget-9b']['description'], 'A 9B chat MoE')
 
 
+class TransportGuardTests(unittest.TestCase):
+    """The scrape must fail loudly rather than write a truncated catalog."""
+
+    def test_interstitial_page_is_detected_by_fetch(self):
+        class Fake:
+            def read(self_inner):
+                return b'<!DOCTYPE html><html><head><title></title></head><body></body></html>'
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+        original = rc.urllib.request.urlopen
+        rc.urllib.request.urlopen = lambda *a, **k: Fake()
+        try:
+            with self.assertRaises(rc.ScrapeError):
+                rc.fetch(1)
+        finally:
+            rc.urllib.request.urlopen = original
+
+    def test_real_card_page_passes_the_check(self):
+        class Fake:
+            def read(self_inner):
+                return b'<li class="flex"><div class="nv-card-root"></div></li>'
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *exc):
+                return False
+
+        original = rc.urllib.request.urlopen
+        rc.urllib.request.urlopen = lambda *a, **k: Fake()
+        try:
+            self.assertIn('nv-card-root', rc.fetch(1))
+        finally:
+            rc.urllib.request.urlopen = original
+
+    def test_shrink_guard_blocks_a_partial_catalog(self):
+        self.assertTrue(rc.implausible_shrink(1, 97))
+        self.assertFalse(rc.implausible_shrink(97, 97))
+        self.assertFalse(rc.implausible_shrink(90, 97))
+        self.assertFalse(rc.implausible_shrink(1, 97, force=True))
+
+    def test_shrink_guard_allows_a_first_run(self):
+        self.assertFalse(rc.implausible_shrink(0, 0))
+        self.assertFalse(rc.implausible_shrink(97, 0))
+
+
 class ShippedCatalogTests(unittest.TestCase):
     def test_catalog_file_matches_its_own_checksum_shape(self):
         data = json.loads((ROOT / 'data' / 'nvidia_catalog.json').read_text())

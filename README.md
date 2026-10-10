@@ -98,11 +98,14 @@ python3 scripts/radar.py status               # 打印上次报告
 python3 scripts/radar.py probe --model ID     # 验证 chat + tools（需 NVIDIA_API_KEY）
 python3 scripts/radar.py sync                 # 输出 Pi 配置提案
 python3 scripts/radar.py catalog              # 看内置目录概况
-python3 scripts/refresh_catalog.py            # 重新抓 build.nvidia.com
+python3 scripts/refresh_catalog.py            # 重新抓 build.nvidia.com（带损坏保护）
 python3 scripts/refresh_catalog.py --check    # 只看漂移，不写文件
+python3 scripts/refresh_catalog.py --force    # 真的大规模下架时强制覆盖
 
-python3 -m unittest discover -s tests         # 26 个测试，不联网
+python3 -m unittest discover -s tests         # 30 个测试，不联网
 ```
+
+> 刷新有保护：任何一页拿不到模型卡片就判为传输失败（重试 2 次后报错退出，**不写文件**）；新结果不足已提交目录的 70% 时拒绝覆盖。破损页面永远不会把一份好目录刷没。
 
 常用参数：
 
@@ -163,12 +166,20 @@ python3 -m unittest discover -s tests         # 26 个测试，不联网
 - 每次跑完对比上一版报告，重点看：新上架的免费模型、下架的、不再是免费的、`eligible` 池的变化。
 - 目录（`build.nvidia.com`）变化比 API 慢，一周刷一次 `refresh_catalog.py` 就够；`--check` 只看漂移不落盘。
 
+### 刷新目录不会把好数据刷坏
+
+`build.nvidia.com` 除了反爬空壳页，还会偶发返回不完整的页面。这两种情况解析出来都是"模型突然少了一大批"，如果直接落盘，一份好好的 97 模型目录就被覆盖成空的了。所以：
+
+- 任何一页解析不出模型卡片 → 判为传输失败，重试 2 次，仍失败就报错退出、**不写文件**；
+- 新结果不足已提交目录的 70% → 拒绝覆盖并退出（真的大规模下架才用 `--force`）。
+
 ---
 
-## 顺手记录的两个坑
+## 顺手记录的三个坑
 
 1. **`build.nvidia.com` 对额外请求头有反爬。** 只带 `User-Agent` 能拿到 474 KB 的服务端渲染 HTML；一旦加上 `Accept` / `Accept-Language` 就返回 202 + 一个 2.4 KB 的空壳页。`refresh_catalog.py` 里的注释写明了这点。
 2. **目录 ID 和 API ID 命名不一致。** 目录写 `z-ai/glm-5-3`、`nvidia/llama-3_1-nemotron-…`，API 却是 `z-ai/glm-5.3`、`nvidia/llama-3.1-nemotron-…`。字面匹配会静默丢掉 753B 的旗舰模型，所以两边都做了标点归一化（`norm_name`），并把映射记进报告的 `catalog_aliases`。
+3. **`build.nvidia.com` 偶发返回不完整页面。** 反爬空壳页和半截页面解析出来都像"模型集体下架"。因此刷新脚本把"某一页解析不出卡片"当作传输失败（重试后报错退出），并在结果缩水超过 30% 时拒绝落盘 —— 否则一次网络抖动就会把好目录刷成空的。
 
 ---
 
@@ -182,7 +193,7 @@ python3 -m unittest discover -s tests         # 26 个测试，不联网
 ├── data/
 │   └── nvidia_catalog.json   # 97 个模型；models 自动生成，overrides 手工维护
 ├── tests/
-│   └── test_radar.py         # 26 个测试，全部离线
+│   └── test_radar.py         # 30 个测试，全部离线
 ├── SKILL.md                  # 给 agent 用的技能说明
 └── README.md
 ```
